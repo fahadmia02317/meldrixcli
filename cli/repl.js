@@ -2,7 +2,7 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
 import chalk from 'chalk';
-import { search } from '@inquirer/prompts';
+import { search, select, input, password } from '@inquirer/prompts';
 import fuzzy from 'fuzzy';
 import { ContextManager } from './context.js';
 import { ProviderManager } from './providers/manager.js';
@@ -11,16 +11,143 @@ import { runInteractiveConfig } from './setup.js';
 import { maskKey } from './config.js';
 
 export class CodeCliRepl {
-  /**
-   * @param {ProviderManager} providerManager 
-   * @param {ContextManager} contextManager 
-   */
   constructor(providerManager, contextManager) {
     this.providerManager = providerManager;
     this.contextManager = contextManager;
     this.messages = [];
     this.rl = null;
     this.isGenerating = false;
+    this.activeAgent = 'Build'; // Default agent name as seen in screenshot
+  }
+
+  renderStatusBar() {
+    const model = this.providerManager.getActiveModel() || 'No Model';
+    const provider = this.providerManager.activeProviderName || 'None';
+    const speed = 'low'; // Mocked context/speed status
+    
+    const bar = chalk.bgHex('#1e1e1e').white(
+      ` ${chalk.blue(this.activeAgent)} · ${chalk.bold(model)} ${chalk.dim(provider)} · ${chalk.yellow(speed)} `
+    );
+    
+    process.stdout.write('\n' + bar + '\n');
+  }
+
+  renderFooter() {
+    const hints = chalk.dim('tab') + ' agents  ' + chalk.dim('ctrl+p') + ' commands  ' + chalk.dim('esc') + ' cancel/stop';
+    process.stdout.write(chalk.gray(`\n${' '.repeat(10)}${hints}\n`));
+  }
+
+  async handleConnectCommand() {
+    try {
+      if (this.rl) this.rl.pause();
+
+      const providers = [
+        { name: 'Google Gemini', value: 'gemini', category: 'Popular' },
+        { name: 'OpenAI (ChatGPT Plus/Pro or API key)', value: 'openai', category: 'Popular' },
+        { name: 'Anthropic (API key)', value: 'anthropic', category: 'Popular' },
+        { name: 'OpenRouter (Recommended)', value: 'openrouter', category: 'Popular' },
+        { name: 'Alibaba', value: 'dashscope', category: 'Popular' },
+        { name: 'Groq', value: 'groq', category: 'Providers' },
+        { name: 'Mistral', value: 'mistral', category: 'Providers' },
+        { name: 'DeepSeek', value: 'deepseek', category: 'Providers' },
+      ];
+
+      const choices = providers.map(p => {
+        const hasKey = !!this.providerManager.providers[p.value]?.config.apiKey;
+        return {
+          name: `${hasKey ? chalk.green('✓ ') : '  '}${p.name}`,
+          value: p.value,
+          group: p.category
+        };
+      });
+
+      // Grouping logic for display
+      const groupedChoices = [
+        { name: chalk.blue.bold('\n Popular'), disabled: true },
+        ...choices.filter(c => c.group === 'Popular'),
+        { name: chalk.blue.bold('\n Providers'), disabled: true },
+        ...choices.filter(c => c.group === 'Providers'),
+      ];
+
+      const selectedProvider = await select({
+        message: 'Connect a provider',
+        choices: groupedChoices,
+        pageSize: 15
+      });
+
+      if (selectedProvider) {
+        const apiKey = await password({
+          message: `Enter API Key for ${selectedProvider}:`,
+          validate: (val) => val.length > 0 || 'API Key is required'
+        });
+
+        let baseUrl = undefined;
+        if (selectedProvider === 'openai' || selectedProvider === 'openrouter' || selectedProvider === 'dashscope') {
+          baseUrl = await input({
+            message: 'Custom Base URL (optional, press Enter for default):',
+            default: this.providerManager.providers[selectedProvider]?.config.baseUrl
+          });
+        }
+
+        // Update config
+        const pObj = this.providerManager.providers[selectedProvider];
+        if (pObj) {
+          pObj.config.apiKey = apiKey;
+          if (baseUrl) pObj.config.baseUrl = baseUrl;
+          this.providerManager.saveConfigs();
+          console.log(chalk.green(`\n✔ Successfully connected to ${selectedProvider}!`));
+        }
+      }
+    } catch (err) {
+      if (err.name !== 'ExitPromptError') {
+        console.log(chalk.red(`\n✖ Error: ${err.message}`));
+      }
+    } finally {
+      if (this.rl) {
+        this.rl.resume();
+        this.rl.prompt();
+      }
+    }
+  }
+
+  async showCommandOverlay() {
+    try {
+      if (this.rl) this.rl.pause();
+
+      const commands = [
+        { name: '/agents   Switch agent', value: '/agents' },
+        { name: '/connect  Connect provider', value: '/connect' },
+        { name: '/debug    View debug info', value: '/debug' },
+        { name: '/diff     Open diff viewer', value: '/diff' },
+        { name: '/editor   Open editor', value: '/editor' },
+        { name: '/exit     Exit the app', value: '/exit' },
+        { name: '/help     Help', value: '/help' },
+        { name: '/init     Guided AGENTS.md setup', value: '/init' },
+        { name: '/mcps     Toggle MCPs', value: '/mcps' },
+        { name: '/models   Switch model', value: '/models' },
+      ];
+
+      const selected = await select({
+        message: 'Commands',
+        choices: commands,
+        pageSize: 10
+      });
+
+      if (selected) {
+        // Execute the selected command
+        if (selected === '/connect') await this.handleConnectCommand();
+        else if (selected === '/models') await this.handleModelCommand();
+        else if (selected === '/exit') process.exit(0);
+        else console.log(chalk.yellow(`\nCommand ${selected} is not yet implemented in this view.`));
+      }
+    } catch (err) {
+      // Ignore cancel
+    } finally {
+      if (this.rl) {
+        this.rl.resume();
+        this.rl.prompt();
+      }
+    }
   }
 
   printBanner() {
@@ -49,6 +176,8 @@ export class CodeCliRepl {
 
   async start() {
     this.printBanner();
+    this.renderStatusBar();
+    this.renderFooter();
 
     this.rl = readline.createInterface({
       input: process.stdin,
@@ -61,6 +190,12 @@ export class CodeCliRepl {
     this.rl.on('line', async (line) => {
       const input = line.trim();
       if (!input) {
+        this.promptUser();
+        return;
+      }
+
+      if (input === '/') {
+        await this.showCommandOverlay();
         this.promptUser();
         return;
       }
@@ -149,7 +284,12 @@ export class CodeCliRepl {
         break;
 
       case '/model':
+      case '/models':
         await this.handleModelCommand(argStr);
+        break;
+
+      case '/connect':
+        await this.handleConnectCommand();
         break;
 
       case '/config':

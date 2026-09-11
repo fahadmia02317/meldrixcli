@@ -18,7 +18,7 @@ If you have cloned the repository, you can install it as a global CLI tool:
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-username/your-repo-name.git
+   git clone https://github.com/fahadmia02317/meldrixcli
    cd your-repo-name
    ```
 

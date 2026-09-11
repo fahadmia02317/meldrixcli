@@ -19,7 +19,7 @@ If you have cloned the repository, you can install it as a global CLI tool:
 1. **Clone the repository**:
    ```bash
    git clone https://github.com/fahadmia02317/meldrixcli
-   cd your-repo-name
+   cd meldrixcli
    ```
 
 2. **Install dependencies**:

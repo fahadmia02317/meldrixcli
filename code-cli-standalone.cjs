@@ -440,22 +440,85 @@ async function runRepl() {
         }
         console.log('');
       } else if (cmd === '/model') {
-        console.log(`\n${c.bold}${c.cyan}Available Providers & Models:${c.reset}`);
-        for (const [k, p] of Object.entries(config.providers)) {
-          const isAct = k === config.activeProvider;
-          console.log(`${isAct ? c.green : c.white}• [${k}] ${p.name} ${isAct ? '(ACTIVE)' : ''}${c.reset}`);
-          p.models.forEach(m => console.log(`    - ${m}`));
+        const allModels = [];
+        for (const [pId, p] of Object.entries(config.providers)) {
+          let tag = pId.charAt(0).toUpperCase() + pId.slice(1);
+          if (pId === 'gemini') tag = 'Google';
+          if (pId === 'openai') tag = 'OpenAI';
+          if (pId === 'dashscope') tag = 'Alibaba';
+          if (pId === 'anthropic') tag = 'Anthropic';
+          if (pId === 'openrouter') tag = 'OpenRouter';
+          
+          p.models.forEach(m => {
+            allModels.push({ pId, model: m, tag });
+          });
         }
-        const sel = await ask(`\n${c.white}Select provider [${config.activeProvider}]: ${c.reset}`);
-        if (sel.trim() && config.providers[sel.trim().toLowerCase()]) {
-          config.activeProvider = sel.trim().toLowerCase();
+
+        // 1. Direct Command Argument (Index Selection)
+        if (arg) {
+          const idx = parseInt(arg, 10);
+          if (!isNaN(idx) && idx > 0 && idx <= allModels.length) {
+            const sel = allModels[idx - 1];
+            config.activeProvider = sel.pId;
+            config.activeModel = sel.model;
+            saveConfig(config);
+            console.log(`${c.green}✔ Switched to #${idx}: ${sel.model} [${sel.tag}]${c.reset}\n`);
+            continue;
+          }
         }
-        const prov = config.providers[config.activeProvider];
-        const mSel = await ask(`${c.white}Select model [${prov.defaultModel}]: ${c.reset}`);
-        if (mSel.trim()) config.activeModel = mSel.trim();
-        else config.activeModel = prov.defaultModel;
-        saveConfig(config);
-        console.log(`${c.green}✔ Active: ${config.activeProvider} (${config.activeModel})${c.reset}\n`);
+
+        // 2. Interactive Menu
+        const printModels = (filter = '') => {
+          console.log(`\n${c.bold}${c.cyan}Available Models:${c.reset}`);
+          let displayCount = 0;
+          allModels.forEach((m, i) => {
+            const isAct = m.pId === config.activeProvider && m.model === config.activeModel;
+            const line = `${i + 1}. ${m.model} [${m.tag}]`;
+            if (!filter || m.model.toLowerCase().includes(filter.toLowerCase()) || m.tag.toLowerCase().includes(filter.toLowerCase())) {
+              console.log(`${isAct ? c.green + c.bold : c.white}${line}${isAct ? ' *ACTIVE*' : ''}${c.reset}`);
+              displayCount++;
+            }
+          });
+          if (displayCount === 0) console.log(`  ${c.dim}(No models matching filter)${c.reset}`);
+        };
+
+        printModels();
+        console.log(`\n${c.dim}Enter a number to select, or type a keyword to filter:${c.reset}`);
+        const selInput = await ask(`${c.white}Selection > ${c.reset}`);
+        if (!selInput.trim()) continue;
+
+        const selIdx = parseInt(selInput, 10);
+        if (!isNaN(selIdx) && selIdx > 0 && selIdx <= allModels.length) {
+          const sel = allModels[selIdx - 1];
+          config.activeProvider = sel.pId;
+          config.activeModel = sel.model;
+          saveConfig(config);
+          console.log(`${c.green}✔ Switched to #${selIdx}: ${sel.model} [${sel.tag}]${c.reset}\n`);
+        } else {
+          // One-shot filter
+          printModels(selInput);
+          console.log(`\n${c.dim}Enter a number to select:${c.reset}`);
+          const secondInput = await ask(`${c.white}Selection > ${c.reset}`);
+          const secondIdx = parseInt(secondInput, 10);
+          if (!isNaN(secondIdx) && secondIdx > 0 && secondIdx <= allModels.length) {
+            const sel = allModels[secondIdx - 1];
+            config.activeProvider = sel.pId;
+            config.activeModel = sel.model;
+            saveConfig(config);
+            console.log(`${c.green}✔ Switched to #${secondIdx}: ${sel.model} [${sel.tag}]${c.reset}\n`);
+          } else if (secondInput.trim()) {
+            // Exact name match
+            const match = allModels.find(m => m.model.toLowerCase() === secondInput.trim().toLowerCase());
+            if (match) {
+              config.activeProvider = match.pId;
+              config.activeModel = match.model;
+              saveConfig(config);
+              console.log(`${c.green}✔ Switched to: ${match.model} [${match.tag}]${c.reset}\n`);
+            } else {
+              console.log(`${c.yellow}Invalid selection.${c.reset}`);
+            }
+          }
+        }
       } else if (cmd === '/config') {
         console.log(`\n${c.bold}${c.cyan}⚙️  Configuration Wizard:${c.reset}`);
         for (const [k, p] of Object.entries(config.providers)) {
@@ -548,7 +611,7 @@ ${c.bold}REPL SLASH COMMANDS:${c.reset}
   /add <path>              Add file or directory into context
   /drop <path>             Remove file from context
   /files                   List all loaded context files
-  /model [prov:model]      Switch active provider or model
+  /model [index/name]      Switch active provider or model
   /config                  Configure API keys and endpoints
   /clear                   Clear conversation history
   /help                    Show help menu

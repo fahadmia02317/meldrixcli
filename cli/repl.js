@@ -2,6 +2,8 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
 import chalk from 'chalk';
+import { search } from '@inquirer/prompts';
+import fuzzy from 'fuzzy';
 import { ContextManager } from './context.js';
 import { ProviderManager } from './providers/manager.js';
 import { extractFileModifications, computeDiff, formatTerminalDiff, applyFileChange } from './diff.js';
@@ -179,7 +181,7 @@ export class CodeCliRepl {
     console.log(chalk.white('  /add <path>           ') + chalk.dim('Add file or directory into context (e.g. /add src)'));
     console.log(chalk.white('  /drop <path>          ') + chalk.dim('Remove a file from active context'));
     console.log(chalk.white('  /files                ') + chalk.dim('List all files currently in active context'));
-    console.log(chalk.white('  /model [prov/model]   ') + chalk.dim('Switch active provider or model interactively'));
+    console.log(chalk.white('  /model [index/name]   ') + chalk.dim('Switch model by index, name, or interactively'));
     console.log(chalk.white('  /config               ') + chalk.dim('Open interactive API key and endpoint configuration'));
     console.log(chalk.white('  /status               ') + chalk.dim('Display active provider, keys, and context tokens'));
     console.log(chalk.white('  /clear                ') + chalk.dim('Reset conversation history'));
@@ -203,8 +205,42 @@ export class CodeCliRepl {
   }
 
   async handleModelCommand(argStr) {
+    const allModels = [];
+    const providers = Object.keys(this.providerManager.providers);
+    
+    for (const pId of providers) {
+      const pObj = this.providerManager.providers[pId];
+      const models = await pObj.listModels();
+      
+      // Determine provider tag
+      let tag = pId.charAt(0).toUpperCase() + pId.slice(1);
+      if (pId === 'gemini') tag = 'Google';
+      if (pId === 'openai') tag = 'OpenAI';
+      if (pId === 'dashscope') tag = 'Alibaba';
+      if (pId === 'anthropic') tag = 'Anthropic';
+      if (pId === 'openrouter') tag = 'OpenRouter';
+
+      for (const m of models) {
+        allModels.push({
+          id: pId,
+          model: m,
+          tag: tag,
+          name: `[${tag}] ${m}`
+        });
+      }
+    }
+
+    // 1. Direct Command Argument (Index Selection)
     if (argStr) {
-      // Direct syntax: /model gemini:gemini-3.8-flash or /model openai:gpt-4o or /model gpt-4o
+      const index = parseInt(argStr, 10);
+      if (!isNaN(index) && index > 0 && index <= allModels.length) {
+        const selection = allModels[index - 1];
+        this.providerManager.setActiveProviderAndModel(selection.id, selection.model);
+        console.log(chalk.green(`✔ Switched to #${index}: ${selection.model} [${selection.tag}]`));
+        return;
+      }
+
+      // Fallback: Direct syntax if user types "openai:gpt-4o"
       if (argStr.includes(':')) {
         const [prov, mod] = argStr.split(':');
         try {
@@ -215,37 +251,52 @@ export class CodeCliRepl {
         }
         return;
       }
+    }
 
-      // Check if matches a provider
-      if (this.providerManager.providers[argStr.toLowerCase()]) {
-        const prov = argStr.toLowerCase();
-        const defModel = this.providerManager.providers[prov].config.defaultModel;
-        this.providerManager.setActiveProviderAndModel(prov, defModel);
-        console.log(chalk.green(`✔ Switched to provider '${prov}' (${defModel}).`));
-        return;
+    // 2. Interactive Search Menu
+    try {
+      if (this.rl) this.rl.pause();
+
+      const selectedValue = await search({
+        message: 'Search and select a model:',
+        source: async (input) => {
+          if (!input) {
+            return allModels.map((m, i) => ({
+              name: `${i + 1}. ${m.model} [${m.tag}]`,
+              value: m,
+              description: `Provider: ${m.tag}`
+            }));
+          }
+
+          const results = fuzzy.filter(input, allModels, {
+            extract: (el) => el.name
+          });
+
+          return results.map((res) => ({
+            name: `${res.index + 1}. ${res.original.model} [${res.original.tag}]`,
+            value: res.original,
+            description: `Provider: ${res.original.tag}`
+          }));
+        },
+      });
+
+      if (selectedValue) {
+        this.providerManager.setActiveProviderAndModel(selectedValue.id, selectedValue.model);
+        console.log(chalk.green(`\n✔ Switched to: ${selectedValue.model} [${selectedValue.tag}]`));
+      }
+    } catch (err) {
+      // User likely cancelled (Ctrl+C)
+      if (err.name !== 'ExitPromptError') {
+        console.log(chalk.red(`\n✖ Error during selection: ${err.message}`));
+      } else {
+        console.log(chalk.dim('\nModel selection cancelled.'));
+      }
+    } finally {
+      if (this.rl) {
+        this.rl.resume();
+        this.rl.prompt();
       }
     }
-
-    // Interactive listing
-    console.log(chalk.bold.cyan('\nAvailable Providers & Models:'));
-    const providers = Object.keys(this.providerManager.providers);
-    for (let i = 0; i < providers.length; i++) {
-      const pName = providers[i];
-      const pObj = this.providerManager.providers[pName];
-      const models = await pObj.listModels();
-      const isActive = pName === this.providerManager.activeProviderName;
-      console.log(
-        chalk.bold(isActive ? chalk.green(`[${i + 1}] ${pObj.config.name} *ACTIVE*`) : chalk.white(`[${i + 1}] ${pObj.config.name}`)) +
-        chalk.dim(` (${pName})`)
-      );
-      models.forEach(m => {
-        const isCurrentModel = isActive && m === this.providerManager.getActiveModel();
-        console.log(chalk.dim(`     - ${isCurrentModel ? chalk.yellow(`* ${m}`) : m}`));
-      });
-    }
-
-    console.log(chalk.dim('\nTo switch, type: /model <provider>:<model>'));
-    console.log(chalk.dim('Example: /model gemini:gemini-3.1-pro-preview or /model openai:gpt-4o\n'));
   }
 
   async handleUserPrompt(userText) {

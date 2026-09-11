@@ -1,0 +1,6 @@
+{
+  "name": "CodeCLI - AI Coding Agent",
+  "description": "Production-ready multi-provider interactive CLI coding agent with streaming REPL, context awareness, file diffing, and dynamic model switching for Gemini, OpenRouter (400+ models), OpenAI, Claude, and Qwen.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
